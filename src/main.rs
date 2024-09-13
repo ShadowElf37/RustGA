@@ -263,7 +263,7 @@ impl GeometricAlgebra {
     }
 
     // generalization of complex conjugate
-    pub fn reversed(&self, m: &Multivector) -> Multivector {
+    pub fn reverse(&self, m: &Multivector) -> Multivector {
         let mut new = m.clone();
         for blade in m.nonzero_blade_indices() {
             new.blades[blade] *= [1.0, -1.0][((blade.count_ones()/2) % 2) as usize]
@@ -279,7 +279,7 @@ impl GeometricAlgebra {
 
     // for multivector m and conjugator R, compute RmR*
     pub fn conjugate(&self, m: &Multivector, conjugator: &Multivector) -> Multivector {
-        self.mul(conjugator, &self.mul(m, &self.reversed(conjugator)))
+        self.mul(conjugator, &self.mul(m, &self.reverse(conjugator)))
     }
 
     pub fn dual(&self, m: &Multivector) -> Multivector {
@@ -287,7 +287,16 @@ impl GeometricAlgebra {
     }
 
     pub fn quadratic_form(&self, m: &Multivector) -> Scalar {
-        self.mul_and_project_out_scalar(m, &self.reversed(m))
+        let mut sum: Scalar = 0.0;
+        for blade in 0..self.size {
+            sum += m.blades[blade] * m.blades[blade] * self.sign_of_square(blade)
+        }
+        sum
+        //self.mul_and_project_out_scalar(m, &self.reversed(m))
+    }
+
+    pub fn inverse(&self, m: &Multivector) -> Multivector {
+        self.scale(m, 1.0/self.quadratic_form(m))
     }
 
 
@@ -346,13 +355,13 @@ impl GeometricAlgebra {
             new.blades[0b100] = z;
             new
         }
-        pub fn vec4(&self, x: Scalar, y: Scalar, z: Scalar, w: Scalar) -> Multivector {
+        pub fn vec4(&self, t: Scalar, x: Scalar, y: Scalar, z: Scalar) -> Multivector {
             assert!(self.dimension >= 4, "Cannot make vec4 in a {}-dimensional GA", self.dimension);
             let mut new = self.zero();
-            new.blades[0b0001] = x;
-            new.blades[0b0010] = y;
-            new.blades[0b0100] = z;
-            new.blades[0b1000] = w;
+            new.blades[0b0001] = t;
+            new.blades[0b0010] = x;
+            new.blades[0b0100] = y;
+            new.blades[0b1000] = z;
             new
         }
         pub fn bivec3(&self, xy: Scalar, yz: Scalar, zx: Scalar) -> Multivector {
@@ -363,22 +372,24 @@ impl GeometricAlgebra {
             new.blades[0b101] = zx;
             new
         }
-        pub fn bivec4(&self, xy: Scalar, yz: Scalar, zw: Scalar, wx: Scalar) -> Multivector {
-            assert!(self.dimension >= 4, "Cannot make 4-element bivector in a {}-dimensional GA", self.dimension);
+        pub fn bivec4(&self, xt: Scalar, yt: Scalar, zt: Scalar, xy: Scalar, yz: Scalar, zx: Scalar) -> Multivector {
+            assert!(self.dimension >= 4, "Cannot make 6-element bivector in a {}-dimensional GA", self.dimension);
             let mut new = self.zero();
-            new.blades[0b0011] = xy;
-            new.blades[0b0110] = yz;
-            new.blades[0b1100] = zw;
-            new.blades[0b1001] = wx;
+            new.blades[0b0011] = xt;
+            new.blades[0b0101] = yt;
+            new.blades[0b1001] = zt;
+            new.blades[0b0110] = xy;
+            new.blades[0b1100] = yz;
+            new.blades[0b1010] = zx;
             new
         }
-        pub fn trivec4(&self, xyz: Scalar, yzw: Scalar, zwx: Scalar, wxy: Scalar) -> Multivector {
+        pub fn trivec4(&self, xyz: Scalar, tyz: Scalar, tzx: Scalar, txy: Scalar) -> Multivector {
             assert!(self.dimension >= 4, "Cannot make 4-element trivector in a {}-dimensional GA", self.dimension);
             let mut new = self.zero();
-            new.blades[0b0111] = xyz;
-            new.blades[0b1110] = yzw;
-            new.blades[0b1101] = zwx;
-            new.blades[0b1011] = wxy;
+            new.blades[0b1110] = xyz;
+            new.blades[0b1101] = tyz;
+            new.blades[0b1011] = tzx;
+            new.blades[0b0111] = txy;
             new
         }
         pub fn pseudoscalar(&self, x: Scalar) -> Multivector {
@@ -395,5 +406,6 @@ fn main() {
     println!("{}", g.rotate_in(a, &g.blade(&[1, 2]), PI/4.0));
     println!("{}", g.exp(&g.scalar(1.0)));
     println!("{}", g.add(&g.scalar(1.0), &g.pseudoscalar(2.0)));
-    println!("{}", g.quadratic_form(&g.vec4(1.0, 0.0, 0.0, 1.0)))
+    println!("{}", g.quadratic_form(&g.vec4(2.0, 0.0, 1.0, 1.0)));
+    println!("{}", g.quadratic_form(&g.vec4(2.0, 0.0, 1.0, 1.0)));
 }
