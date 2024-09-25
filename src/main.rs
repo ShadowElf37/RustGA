@@ -75,21 +75,59 @@ pub struct GeometricAlgebra {
     pub signature: (u32, u32),
     p_mask: usize,
     q_mask: usize,
+    //signs_of_squares: Vec<f64>,
+    multiplication_table: Vec<u8>,
     size: usize,
 }
 impl GeometricAlgebra {
-    const MAX_DIMENSION: u32 = 16; // size of multivector will be 2^MAX_DIMENSION bytes so please be very careful changing this!
+    const MAX_DIMENSION: u32 = 12;
+    // size of multivector will be 2^MAX_DIMENSION bytes
+    // size of the internal multiplication table will be 4^MAX_DIMENSION bytes
+    // please be very careful changing this! your computer might explode!
 
     pub fn new(dimension: u32, signature: (u32, u32)) -> Self {
-        assert!(dimension <= Self::MAX_DIMENSION, "GA dimension must be <= {} due to memory constraints", Self::MAX_DIMENSION);
+        assert!(dimension <= Self::MAX_DIMENSION, "GA dimension must be <= {} due to memory constraints. You can override this, but please be very careful.", Self::MAX_DIMENSION);
         assert!(signature.0 + signature.1 == dimension, "Signature p+q do not add up to the dimension of the algebra");
         let q_mask = usize::MAX << signature.0;
+        let p_mask = !q_mask;
+        let size = 2usize.pow(dimension);
+
+        let multiplication_table = {
+            let mut v = Vec::<u8>::with_capacity(size*size);
+            for lhs in 0..size {
+                for rhs in 0..size {
+                    let mut permutation_sign = (lhs & rhs & q_mask).count_ones() as usize;
+                    if lhs != 0 && rhs != 0 {
+                        let mut jumps = 0;
+                        for i in (0..=highest_bit(lhs)).rev() {
+                            permutation_sign += jumps * get_bit(rhs, i);
+                            jumps += get_bit(lhs, i);
+                        }
+                    }
+                    v.push((permutation_sign & 1) as u8);
+                }
+            }
+            v
+        };
+
+        println!("Geometric algebra loaded with dimension {} and signature {:?}. Multiplication table is {} bytes.", dimension, signature, size*size);
+        /*let signs_of_squares = {
+            let mut v = Vec::with_capacity(size);
+            for blade in 0..size {
+                let p = (blade & p_mask).count_ones();
+                let q = (blade & q_mask).count_ones();
+                v.push([1.0, 1.0, -1.0, -1.0][((p as i32 - q as i32).rem_euclid(4)) as usize]);
+            }
+            v
+        };*/
+
         Self {
             dimension: dimension as usize,
             signature,
-            p_mask: !q_mask,
+            p_mask,
             q_mask,
-            size: 2usize.pow(dimension)
+            multiplication_table,
+            size
         }
     }
 
@@ -114,11 +152,69 @@ impl GeometricAlgebra {
         result
     }
 
+    pub fn log(&self, m: &Multivector) -> Multivector {
+        let mut result = m.clone();
+
+        let mut several_blades = false;
+        let mut the_only_blade: Blade = 0;
+        for blade in 1..self.size {
+            if m.blades[blade] != 0.0 {
+                if the_only_blade == 0 {
+                    the_only_blade = blade;
+                }
+                else {
+                    several_blades = true;
+                    break;
+                }
+            }
+        }
+
+
+        if !several_blades{
+            if the_only_blade == 0 {
+                result.blades[0] = result.blades[0].ln();
+                return result;
+            } else {
+                match self.sign_of_square(the_only_blade) {
+                    1.0 => {
+                        result.blades[0] = self.quadratic_form(m).sqrt().ln();
+                        result.blades[the_only_blade] = Scalar::atanh(m.blades[the_only_blade]/m.blades[0]);
+                    }
+                    -1.0 => {
+                        result.blades[0] = self.quadratic_form(m).sqrt().ln();
+                        result.blades[the_only_blade] = Scalar::atan(m.blades[the_only_blade]/m.blades[0]);
+                    }
+                    _ => panic!()
+                }
+                return result;
+            }
+            
+        }
+        else { // compute iteratively using Newton's method
+            panic!("cannot compute logarithms of multivectors with multiple non-scalar blades");
+            let mag = self.sum_of_squares(&result).sqrt();
+            result = self.scale(&result, 1.0/mag);
+            result = self.add_scalar(&result, -1.0);
+
+            let initial = result.clone();
+            let mut product = result.clone();
+
+            for n in 2..30 {
+                product = self.mul(&product, &initial);
+                result = self.add(&result, &self.scale(&product, [-1.0, 1.0][n&1] / (n as f64)));
+
+                // let exp = self.exp(&result);
+                // result = self.add(&result, &self.scale(
+                //     &self.mul(&self.sub(m, &exp), &self.inverse(&self.add(m, &exp))), 2.0
+                // ));
+            }
+            return self.add_scalar(&result, mag.ln());
+        } 
+    }
+
     // MULTIPLICATION HELPERS
         fn sign_of_square(&self, blade: Blade) -> f64 {
-            let p = (blade & self.p_mask).count_ones();
-            let q = (blade & self.q_mask).count_ones();
-            [1.0, 1.0, -1.0, -1.0][((p as i32 - q as i32).rem_euclid(4)) as usize]
+            self.get_sign_of_multiplication_of_two_blades(blade, blade)
         }
         fn mul_blade_R(&self, lhs: &Multivector, rhs: (Scalar, Blade)) -> Multivector {
             let mut new = self.zero();
@@ -136,7 +232,9 @@ impl GeometricAlgebra {
             }
             new
         }
-        fn get_sign_of_multiplication_of_two_blades(&self, lhs: Blade, rhs: Blade) -> Scalar {
+        fn get_sign_of_multiplication_of_two_blades_manually(&self, lhs: Blade, rhs: Blade) -> Scalar {
+            // for small dimension, this could be a table. consider - at dim=12, the table is only 2^24 large (16 MB).
+            // fall back on this if the code is modified to support larger dimensions
             let mut permutation_sign = (lhs & rhs & self.q_mask).count_ones() as usize;
             if lhs != 0 && rhs != 0 {
                 let mut jumps = 0;
@@ -147,12 +245,23 @@ impl GeometricAlgebra {
             }
             [1.0, -1.0][(permutation_sign % 2) as usize]
         }
+        fn get_sign_of_multiplication_of_two_blades(&self, lhs: Blade, rhs: Blade) -> Scalar {
+            [1.0, -1.0][self.fetch_multiplication_table(lhs, rhs) as usize]
+        }
+        fn fetch_multiplication_table(&self, lhs: Blade, rhs: Blade) -> u8 {
+            self.multiplication_table[lhs*self.size + rhs]
+        }
 
     pub fn add(&self, lhs: &Multivector, rhs: &Multivector) -> Multivector {
         let mut new = lhs.clone();
         for blade in 0..self.size {
             new.blades[blade] += rhs.blades[blade]
         }
+        new
+    }
+    pub fn add_scalar(&self, lhs: &Multivector, rhs: Scalar) -> Multivector {
+        let mut new = lhs.clone();
+        new.blades[0] += rhs;
         new
     }
     pub fn sub(&self, lhs: &Multivector, rhs: &Multivector) -> Multivector {
@@ -232,23 +341,56 @@ impl GeometricAlgebra {
         new
     }
 
-    pub fn is_homogeneous(&self, m: &Multivector) -> bool {
+    // returns None if it's not homogeneous, or it returns the only blade it has
+    pub fn is_homogeneous(&self, m: &Multivector) -> Option<Blade> {
         let mut grade: Option<u32> = None;
+        let mut only_blade: Option<Blade> = None;
         for blade in m.nonzero_blade_indices() {
             if grade.is_none() {
                 grade = Some(blade.count_ones());
+                only_blade = Some(blade);
                 continue;
             }
             if blade.count_ones() != grade.unwrap() {
-                return false;
+                return None;
             }
         }
-        return true;
+        return Some(only_blade.unwrap_or(0));
+    }
+    // counts e.g.  1.0 + e1e2  as homogeneous
+    pub fn is_homogeneous_except_scalar_part(&self, m: &Multivector) -> Option<Blade> {
+        let mut grade: Option<u32> = None;
+        let mut only_blade: Option<Blade> = None;
+        for blade in m.nonzero_blade_indices() {
+            if blade == 0 {
+                continue;
+            }
+            if grade.is_none() {
+                grade = Some(blade.count_ones());
+                only_blade = Some(blade);
+                continue;
+            }
+            if blade.count_ones() != grade.unwrap() {
+                return None;
+            }
+        }
+        return Some(only_blade.unwrap_or(0));
     }
     pub fn is_homogeneous_of_grade(&self, m: &Multivector, grade: u32) -> bool {
         for blade in m.nonzero_blade_indices() {
             if blade.count_ones() != grade {
                 return false;
+            }
+        }
+        return true;
+    }
+    pub fn is_in_center_of_algebra(&self, m: &Multivector) -> bool {
+        for blade1 in m.nonzero_blade_indices() {
+            for blade2 in 0..self.size {
+                //println!("{}, {}, {}, {}", self.fetch_multiplication_table(blade1, blade2), self.fetch_multiplication_table(blade2, blade1), blade1, blade2);
+                if self.fetch_multiplication_table(blade1, blade2) != self.fetch_multiplication_table(blade2, blade1) {
+                    return false;
+                }
             }
         }
         return true;
@@ -282,6 +424,7 @@ impl GeometricAlgebra {
         self.mul(conjugator, &self.mul(m, &self.reverse(conjugator)))
     }
 
+    // hodge star
     pub fn dual(&self, m: &Multivector) -> Multivector {
         self.mul_blade_L((1.0, self.size-1), m)
     }
@@ -289,10 +432,17 @@ impl GeometricAlgebra {
     pub fn quadratic_form(&self, m: &Multivector) -> Scalar {
         let mut sum: Scalar = 0.0;
         for blade in 0..self.size {
-            sum += m.blades[blade] * m.blades[blade] * self.sign_of_square(blade)
+            sum += m.blades[blade] * m.blades[blade] * [1.0, -1.0][((blade & self.q_mask).count_ones() & 1) as usize]
         }
         sum
         //self.mul_and_project_out_scalar(m, &self.reversed(m))
+    }
+    pub fn sum_of_squares(&self, m: &Multivector) -> Scalar {
+        let mut sum: Scalar = 0.0;
+        for blade in 0..self.size {
+            sum += m.blades[blade] * m.blades[blade]
+        }
+        sum
     }
 
     pub fn inverse(&self, m: &Multivector) -> Multivector {
@@ -338,6 +488,13 @@ impl GeometricAlgebra {
                 blade |= 1 << *i-1;
             }
             new.blades[blade] = 1.0;
+            new
+        }
+        // complex number
+        pub fn scalar_pseudoscalar(&self, a: Scalar, b: Scalar) -> Multivector {
+            assert!(self.dimension >= 2, "Cannot make complex number in a {}-dimensional GA", self.dimension);
+            let mut new = self.pseudoscalar(b);
+            new.blades[0] = a;
             new
         }
         pub fn vec2(&self, x: Scalar, y: Scalar) -> Multivector {
@@ -408,4 +565,15 @@ fn main() {
     println!("{}", g.add(&g.scalar(1.0), &g.pseudoscalar(2.0)));
     println!("{}", g.quadratic_form(&g.vec4(2.0, 0.0, 1.0, 1.0)));
     println!("{}", g.quadratic_form(&g.vec4(2.0, 0.0, 1.0, 1.0)));
+
+    let g = GeometricAlgebra::new(2, (2, 0));
+    let angle = g.scalar_pseudoscalar(2.0, PI/4.0);
+    let angle = g.add(&angle, &g.e(1));
+    let n = g.exp(&angle);
+    println!("{}", angle);
+    println!("{}", n);
+    println!("{:?}", g.multiplication_table);
+    
+
+    let g = GeometricAlgebra::new(6, (6, 0));
 }
